@@ -16,6 +16,7 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ConsistentHashService {
+    private final Map<String, List<Integer>> urlToHash = new HashMap<>();
     private final Map<Shard, Set<HashRange>> shardToHashRanges = new ConcurrentHashMap<>();
     private final NavigableSet<CircleRange> circle = new TreeSet<>();
     private final List<Shard> cluster = new ArrayList<>();
@@ -27,6 +28,13 @@ public class ConsistentHashService {
 
     public int clusterSize() {
         return cluster.size();
+    }
+
+    public ClusterConfig getClusterConfig() {
+        ClusterConfig clusterConfig = new ClusterConfig();
+        clusterConfig.setUrlToHash(urlToHash);
+
+        return clusterConfig;
     }
 
     public List<Shard> getShardsByKey(String key, int vnodes) {
@@ -58,15 +66,17 @@ public class ConsistentHashService {
     }
 
     public Map<Shard, Set<HashRange>> addShard(Shard newShard, List<Integer> vnodeHashes) {
-        cluster.add(newShard);
-        cluster.sort(Comparator.comparing(Shard::getUrl));
-        updateIndexMap();
-
         if (circle.isEmpty()) {
             addShardEmpty(newShard, vnodeHashes);
 
             return Map.of();
         }
+
+        urlToHash.putIfAbsent(newShard.getUrl(), new ArrayList<>());
+        urlToHash.get(newShard.getUrl()).addAll(vnodeHashes);
+        cluster.add(newShard);
+        cluster.sort(Comparator.comparing(Shard::getUrl));
+        updateIndexMap();
 
         ConcurrentHashMap<Shard, Set<HashRange>> result = new ConcurrentHashMap<>();
         List<Integer> vnodeHashSorted = splitAndSort(circle.last().getHashRange().getRightBorder(), vnodeHashes);
@@ -93,6 +103,8 @@ public class ConsistentHashService {
 
             return Map.of();
         }
+
+        urlToHash.remove(shard.getUrl());
 
         Map<Shard, Set<HashRange>> result = new HashMap<>();
 
@@ -201,6 +213,9 @@ public class ConsistentHashService {
     private void addShardEmpty(Shard newShard, List<Integer> vnodeHashes) {
         int first = vnodeHashes.get(vnodeHashes.size() - 1);
         HashRange range = new HashRange(first + 1, first);
+
+        urlToHash.putIfAbsent(newShard.getUrl(), new ArrayList<>());
+        urlToHash.get(newShard.getUrl()).add(first);
 
         circle.add(new CircleRange(newShard, range));
         shardToHashRanges.put(newShard, new HashSet<>(List.of(range)));

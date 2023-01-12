@@ -61,9 +61,9 @@ public class TransferSenderService extends TransferService {
             }
         }
 
-        clear();
-
         sendTransferEnd();
+
+        clear();
 
         log.info("End transfer");
     }

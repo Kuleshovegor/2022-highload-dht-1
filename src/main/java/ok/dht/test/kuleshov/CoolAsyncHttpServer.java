@@ -54,15 +54,16 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
     private static final int SENDER_CORE_POOL_SIZE = 4;
     private static final int SENDER_MAXIMUM_POOL_SIZE = 4;
 
-    private final int defaultFrom;
-    private final int defaultAck;
+    private int defaultFrom;
+    private int defaultAck;
     private final String selfUrl;
     private volatile boolean isBlocked;
     private ExecutorService workerExecutorService;
     private final ConsistentHashService consistentHashService;
     private final TransferSenderService transferSenderService;
     private final TransferReceiverService transferReceiverService;
-    private final ClusterConfig clusterConfig;
+    private final String configRequestUrl;
+    private final List<Integer> customHashes;
     private final List<String> clusterUrls;
     private final boolean isAddedNode;
     private HttpClient httpClient = HttpClient.newHttpClient();
@@ -71,7 +72,8 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
     public CoolAsyncHttpServer(
             HttpServerConfig config,
             boolean isAddedNode,
-            ClusterConfig clusterConfig,
+            List<Integer> customHashes,
+            String configRequestUrl,
             Service service,
             Object... routers
     ) throws IOException {
@@ -86,37 +88,35 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         consistentHashService = new ConsistentHashService();
 
         this.isAddedNode = isAddedNode;
-        this.clusterConfig = clusterConfig;
+        this.configRequestUrl = configRequestUrl;
+        this.customHashes = customHashes;
+    }
 
-        if (isAddedNode) {
-            for (Map.Entry<String, List<Integer>> entry : clusterConfig.urlToHash.entrySet()) {
-                if (entry.getKey().equals(selfUrl)) {
-                    continue;
-                }
-                if (entry.getValue() == null || entry.getValue().isEmpty()) {
-                    consistentHashService.addShard(new Shard(entry.getKey()), DEFAULT_VNODES);
-                } else {
-                    consistentHashService.addShard(new Shard(entry.getKey()), entry.getValue());
-                }
-            }
-        } else {
-            for (String shard : clusterUrls) {
-                consistentHashService.addShard(new Shard(shard), DEFAULT_VNODES);
-            }
+    private ClusterConfig requestClusterConfig(String url) throws IOException {
+        HttpRequest request = HttpRequest.newBuilder()
+                .GET()
+                .uri(URI.create(url + "/v0/cluster-config"))
+                .timeout(Duration.ofSeconds(2))
+                .build();
+        HttpResponse<String> response;
+        try {
+            response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        } catch (IOException | InterruptedException e) {
+            throw new IllegalStateException("error sending  url: " + url, e);
+        }
+        if (response.statusCode() != 200) {
+            throw new IllegalStateException(
+                    "error response add node url: " + url + ", error: " + response.statusCode()
+            );
         }
 
-        if (isAddedNode) {
-            Map<Shard, Set<HashRange>> shardSetMap;
-            if (clusterConfig.urlToHash.get(selfUrl) == null || clusterConfig.urlToHash.get(selfUrl).isEmpty()) {
-                shardSetMap = consistentHashService.addShard(new Shard(selfUrl), DEFAULT_VNODES);
-            } else {
-                shardSetMap = consistentHashService.addShard(new Shard(selfUrl), clusterConfig.urlToHash.get(selfUrl));
-            }
-            transferReceiverService.receiveTransfer(shardSetMap);
+        ClusterConfig config;
+        try {
+            config = Json.fromJson(response.body(), ClusterConfig.class);
+        } catch (ClassNotFoundException e) {
+            throw new IllegalStateException(e);
         }
-
-        defaultFrom = clusterUrls.size();
-        defaultAck = defaultFrom / 2 + 1;
+        return config;
     }
 
     private void sendAddNode(String url, List<Integer> hashes) throws IOException {
@@ -181,11 +181,56 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         isBlocked = true;
         super.start();
 
+        ClusterConfig clusterConfig = null;
         if (isAddedNode) {
+            try {
+                clusterConfig = requestClusterConfig(configRequestUrl);
+            } catch (IOException e) {
+                throw new IllegalStateException("Cluster config request error", e);
+            }
+            clusterConfig.getUrlToHash().put(selfUrl, customHashes);
+            clusterUrls.clear();
+            clusterUrls.addAll(clusterConfig.getUrlToHash().keySet());
+            clusterUrls.sort(Comparator.naturalOrder());
+            for (Map.Entry<String, List<Integer>> entry : clusterConfig.getUrlToHash().entrySet()) {
+                if (entry.getKey().equals(selfUrl)) {
+                    continue;
+                }
+                if (entry.getValue() == null || entry.getValue().isEmpty()) {
+                    consistentHashService.addShard(new Shard(entry.getKey()), DEFAULT_VNODES);
+                } else {
+                    consistentHashService.addShard(new Shard(entry.getKey()), entry.getValue());
+                }
+            }
+        } else {
+            for (String shard : clusterUrls) {
+                consistentHashService.addShard(new Shard(shard), DEFAULT_VNODES);
+            }
+        }
+
+        if (isAddedNode) {
+            Map<Shard, Set<HashRange>> shardSetMap;
+            if (clusterConfig.getUrlToHash().get(selfUrl) == null
+                    || clusterConfig.getUrlToHash().get(selfUrl).isEmpty()) {
+                shardSetMap = consistentHashService.addShard(new Shard(selfUrl), DEFAULT_VNODES);
+            } else {
+                shardSetMap = consistentHashService.addShard(
+                        new Shard(selfUrl), clusterConfig.getUrlToHash().get(selfUrl)
+                );
+            }
+            transferReceiverService.receiveTransfer(shardSetMap);
+        }
+
+        defaultFrom = clusterUrls.size();
+        defaultAck = defaultFrom / 2 + 1;
+
+        if (isAddedNode) {
+            defaultFrom = clusterConfig.getUrlToHash().size();
+            defaultAck = defaultFrom / 2 + 1;
             for (String shard : clusterUrls) {
                 if (!Objects.equals(shard, selfUrl)) {
                     try {
-                        sendAddNode(shard, clusterConfig.urlToHash.get(selfUrl));
+                        sendAddNode(shard, clusterConfig.getUrlToHash().get(selfUrl));
                     } catch (IOException e) {
                         e.printStackTrace();
                     }
@@ -194,6 +239,18 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         }
         isBlocked = false;
 
+    }
+
+    private void handleGetClusterConfig(Request request, HttpSession session) throws IOException {
+        if (request.getMethod() != Request.METHOD_GET) {
+            session.sendResponse(emptyResponse(Response.BAD_REQUEST));
+
+            return;
+        }
+        ClusterConfig clusterConfig = consistentHashService.getClusterConfig();
+        Response response = new Response(Response.OK, Json.toJson(clusterConfig).getBytes(StandardCharsets.UTF_8));
+
+        session.sendResponse(response);
     }
 
     private void handleAddShardRequest(Request request, HttpSession session) throws IOException {
@@ -210,13 +267,15 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         Map<Shard, Set<HashRange>> map = consistentHashService.addShard(shardAddBody, DEFAULT_VNODES);
         Set<HashRange> hashRangeSet = map.get(new Shard(selfUrl));
 
-        session.sendResponse(new Response(Response.OK, Response.EMPTY));
+        session.sendResponse(emptyResponse(Response.OK));
 
         if (hashRangeSet != null) {
             transferSenderService.setTransfer(Map.of(new Shard(shardAddBody.getUrl()), hashRangeSet));
             isBlocked = false;
             transferSenderService.startTransfer(service.getAll());
         }
+        defaultFrom = consistentHashService.clusterSize();
+        defaultAck = defaultFrom / 2 + 1;
         isBlocked = false;
     }
 
@@ -224,7 +283,7 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         isBlocked = true;
         Map<Shard, Set<HashRange>> map = consistentHashService.removeShard(new Shard(selfUrl));
 
-        session.sendResponse(new Response(Response.OK, Response.EMPTY));
+        session.sendResponse(emptyResponse(Response.OK));
 
         for (Shard shard : map.keySet()) {
             sendDeleteNode(shard.getUrl());
@@ -238,8 +297,6 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
     private void handleDeleteShardRequest(Request request, HttpSession session) throws IOException {
         String body = new String(request.getBody(), StandardCharsets.UTF_8);
 
-        System.out.println(selfUrl);
-
         ShardAddBody shardAddBody;
         try {
             shardAddBody = Json.fromJson(body, ShardAddBody.class);
@@ -252,11 +309,13 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
         Shard selfShard = new Shard(selfUrl);
         Set<HashRange> hashRangeSet = map.get(selfShard);
 
-        session.sendResponse(new Response(Response.OK, Response.EMPTY));
+        session.sendResponse(emptyResponse(Response.OK));
 
         if (hashRangeSet != null) {
             transferReceiverService.receiveTransfer(Map.of(selfShard, hashRangeSet));
         }
+        defaultFrom = consistentHashService.clusterSize();
+        defaultAck = defaultFrom / 2 + 1;
         isBlocked = false;
     }
 
@@ -276,36 +335,40 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
                 }
 
                 String path = request.getPath();
-                if ("/v0/addnode".equals(path)) {
-                    handleAddShardRequest(request, session);
-                    return;
-                }
+                switch (path) {
+                    case "/v0/cluster-config" -> {
+                        handleGetClusterConfig(request, session);
+                        return;
+                    }
+                    case "/v0/addnode" -> {
+                        handleAddShardRequest(request, session);
+                        return;
+                    }
+                    case "/v0/deletenode" -> {
+                        handleDeleteShardRequest(request, session);
+                        return;
+                    }
+                    case "/v0/maindeletenode" -> {
+                        handleMainDeleteShardRequest(session);
+                        return;
+                    }
 
-                if ("/v0/deletenode".equals(path)) {
-                    handleDeleteShardRequest(request, session);
-                    return;
-                }
-
-                if ("/v0/maindeletenode".equals(path)) {
-                    handleMainDeleteShardRequest(session);
-                    return;
-                }
-
-                if ("/v0/transend".equals(path)) {
-                    transferReceiverService.receiveEnd(new Shard(
-                            Json.fromJson(
-                                    new String(request.getBody(), StandardCharsets.UTF_8),
-                                    ShardAddBody.class
-                            ).getUrl()));
-                    session.sendResponse(emptyResponse(Response.OK));
-                    return;
-                }
-
-                if ("/v0/entities".equals(path)
-                ) {
-                    handleRangeRequest(request, session);
-
-                    return;
+                    case "/v0/transend" -> {
+                        transferReceiverService.receiveEnd(new Shard(
+                                Json.fromJson(
+                                        new String(request.getBody(), StandardCharsets.UTF_8),
+                                        ShardAddBody.class
+                                ).getUrl()));
+                        session.sendResponse(emptyResponse(Response.OK));
+                        return;
+                    }
+                    case "/v0/entities" -> {
+                        handleRangeRequest(request, session);
+                        return;
+                    }
+                    default -> {
+                        //continue
+                    }
                 }
 
                 String id = request.getParameter("id=");

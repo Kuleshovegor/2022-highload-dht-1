@@ -1,7 +1,6 @@
 package ok.dht.test.kuleshov;
 
 import ok.dht.ServiceConfig;
-import ok.dht.test.kuleshov.sharding.ClusterConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,13 +31,15 @@ public final class Server {
             throw new IllegalArgumentException("arguments is empty");
         }
 
-        if (args[0].charAt(0) == '-') {
-            throw new IllegalArgumentException("arguments parameters should start with -");
+        if (args[0].charAt(0) != '-') {
+            throw new IllegalArgumentException(
+                    "arguments parameters should start with -, but found " + args[0].charAt(0)
+            );
         }
 
         String last = "";
         for (String arg : args) {
-            if (arg.charAt(0) == '-') {
+            if (arg.length() >= 2 && arg.charAt(0) == '-' && Character.isLetter(arg.charAt(1))) {
                 options.put(arg, new ArrayList<>());
                 last = arg;
             } else {
@@ -50,6 +51,11 @@ public final class Server {
         boolean isAdded = options.containsKey("-a");
         String url = "http://localhost:" + localPort;
 
+        List<Integer> customHashes = new ArrayList<>();
+        if (options.containsKey("-h")) {
+            customHashes.addAll(options.get("-h").stream().map(Integer::parseInt).toList());
+        }
+
         Path tmpDirectory;
         try {
             tmpDirectory = Files.createTempDirectory(TMP_DIRECTORY_PREFIX);
@@ -58,16 +64,13 @@ public final class Server {
             return;
         }
 
-        ClusterConfig clusterConfig = new ClusterConfig();
-
-        clusterConfig.urlToHash = Map.of(
-                "http://localhost:19234", new ArrayList<>()
-        );
+        List<String> localUrlList = new ArrayList<>();
+        localUrlList.add(url);
 
         ServiceConfig cfg = new ServiceConfig(
                 localPort,
                 url,
-                clusterConfig.urlToHash.keySet().stream().toList(),
+                localUrlList,
                 tmpDirectory
         );
         Service service = new Service(cfg);
@@ -75,8 +78,10 @@ public final class Server {
 
         try {
             if (isAdded) {
-
-                completableFuture = service.startAdded(clusterConfig);
+                if (!options.containsKey("-u")) {
+                    throw new IllegalArgumentException("In added mode need option -u");
+                }
+                completableFuture = service.startAdded(options.get("-u").get(0), customHashes);
             } else {
                 completableFuture = service.start();
             }

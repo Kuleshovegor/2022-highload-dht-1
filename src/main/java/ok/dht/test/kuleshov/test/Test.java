@@ -2,7 +2,6 @@ package ok.dht.test.kuleshov.test;
 
 import ok.dht.ServiceConfig;
 import ok.dht.test.kuleshov.Service;
-import ok.dht.test.kuleshov.sharding.ClusterConfig;
 import one.nio.util.Hash;
 
 import java.io.IOException;
@@ -17,7 +16,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 
 public class Test {
     private static final String LOCALHOST = "http://localhost:";
@@ -54,19 +52,19 @@ public class Test {
     private static Service createAddedService(
             int port,
             int number,
-            Map<String, List<Integer>> cluster
+            String configRequestUrl,
+            List<Integer> customHashes
     ) throws IOException {
-        List<String> urls = cluster.keySet().stream().sorted().toList();
+        List<String> localUrlList = new ArrayList<>();
+        localUrlList.add(LOCALHOST + port);
 
         Path workingDir = Files.createTempDirectory("service" + number);
 
-        ServiceConfig config = new ServiceConfig(port, LOCALHOST + port, urls, workingDir);
+        ServiceConfig config = new ServiceConfig(port, LOCALHOST + port, localUrlList, workingDir);
         Service service = new Service(config);
 
         try {
-            ClusterConfig cfg = new ClusterConfig();
-            cfg.urlToHash = cluster;
-            service.startAdded(cfg);
+            service.startAdded(configRequestUrl, customHashes);
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException(e);
@@ -105,8 +103,7 @@ public class Test {
         assert (
                 HttpURLConnection.HTTP_CREATED == sendPut(service, KEY, VALUE.getBytes(StandardCharsets.UTF_8))
         );
-        Map<String, List<Integer>> cluster = Map.of(LOCALHOST + 19234, new ArrayList<>());
-        Service addedService = createAddedService(19666, 2, cluster);
+        Service addedService = createAddedService(19666, 2, LOCALHOST + 19234, new ArrayList<>());
         Thread.sleep(5000);
         assert (
                 HttpURLConnection.HTTP_OK == sendGet(service, KEY)
@@ -127,8 +124,7 @@ public class Test {
                     HttpURLConnection.HTTP_CREATED
                             == sendPut(service, KEY + i, VALUE.getBytes(StandardCharsets.UTF_8)));
         }
-        Map<String, List<Integer>> cluster = Map.of(LOCALHOST + 19235, new ArrayList<>());
-        final Service addedService = createAddedService(19667, 4, cluster);
+        final Service addedService = createAddedService(19667, 4, LOCALHOST + 19235, new ArrayList<>());
         Thread.sleep(10);
         assert (
                 HttpURLConnection.HTTP_OK == sendGet(service, "41231410")
@@ -156,11 +152,7 @@ public class Test {
         assert (200 == sendGet(service, key2));
         List<Integer> hashes = new ArrayList<>();
         hashes.add(1669446702);
-        Map<String, List<Integer>> cluster = Map.of(
-                LOCALHOST + 19236, new ArrayList<>(),
-                LOCALHOST + 19668, hashes
-        );
-        Service addedService = createAddedService(19668, 6, cluster);
+        Service addedService = createAddedService(19668, 6,LOCALHOST + 19236, hashes);
         Thread.sleep(3000);
         assert (
                 HttpURLConnection.HTTP_OK == sendGet(addedService, key2)

@@ -7,15 +7,15 @@ import ok.dht.test.kuleshov.dao.Config;
 import ok.dht.test.kuleshov.dao.Dao;
 import ok.dht.test.kuleshov.dao.Entry;
 import ok.dht.test.kuleshov.dao.storage.MemorySegmentDao;
-import ok.dht.test.kuleshov.sharding.ClusterConfig;
 import one.nio.http.HttpServer;
 import one.nio.http.Request;
 import one.nio.http.Response;
 import one.nio.util.Utf8;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.Map;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 import static ok.dht.test.kuleshov.utils.ConfigUtils.createConfigFromPort;
@@ -38,19 +38,31 @@ public class Service implements ok.dht.Service {
     public CompletableFuture<?> start() throws IOException {
         Config daoConfig = new Config(config.workingDir(), DEFAULT_DAO_FLUSH_THRESHOLD);
         memorySegmentDao = new MemorySegmentDao(daoConfig);
-        ClusterConfig clusterConfig = new ClusterConfig();
-        clusterConfig.urlToHash = Map.of();
-        server = new CoolAsyncHttpServer(createConfigFromPort(config.selfPort()), false, clusterConfig, this);
+        server = new CoolAsyncHttpServer(createConfigFromPort(config.selfPort()), false, new ArrayList<>(), null, this);
         isStarted = true;
         server.start();
 
         return CompletableFuture.completedFuture(null);
     }
 
-    public CompletableFuture<?> startAdded(ClusterConfig clusterConfig) throws IOException {
+    public CompletableFuture<?> startCustomHashes(List<Integer> customHashes) throws IOException {
         Config daoConfig = new Config(config.workingDir(), DEFAULT_DAO_FLUSH_THRESHOLD);
         memorySegmentDao = new MemorySegmentDao(daoConfig);
-        server = new CoolAsyncHttpServer(createConfigFromPort(config.selfPort()), true, clusterConfig, this);
+        server = new CoolAsyncHttpServer(
+                createConfigFromPort(config.selfPort()), false, customHashes, null, this
+        );
+        isStarted = true;
+        server.start();
+
+        return CompletableFuture.completedFuture(null);
+    }
+
+    public CompletableFuture<?> startAdded(String configRequestUrl, List<Integer> customHashes) throws IOException {
+        Config daoConfig = new Config(config.workingDir(), DEFAULT_DAO_FLUSH_THRESHOLD);
+        memorySegmentDao = new MemorySegmentDao(daoConfig);
+        server = new CoolAsyncHttpServer(
+                createConfigFromPort(config.selfPort()), true, customHashes, configRequestUrl, this
+        );
         isStarted = true;
         server.start();
 
