@@ -6,10 +6,15 @@ import org.slf4j.LoggerFactory;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 public class TransferReceiverService extends TransferService {
     private final Logger log = LoggerFactory.getLogger(TransferReceiverService.class);
     private final Map<Shard, Set<HashRange>> map = new HashMap<>();
+
+    public TransferReceiverService(Function<String, Integer> hashFunction) {
+        super(hashFunction);
+    }
 
     public void receiveTransfer(Map<Shard, Set<HashRange>> hashRangeMap) {
         isTransferring = true;

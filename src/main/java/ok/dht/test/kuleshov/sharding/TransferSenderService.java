@@ -2,6 +2,7 @@ package ok.dht.test.kuleshov.sharding;
 
 import jdk.incubator.foreign.MemorySegment;
 import ok.dht.test.kuleshov.dao.Entry;
+import ok.dht.test.kuleshov.exception.TransferException;
 import one.nio.serial.Json;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 public class TransferSenderService extends TransferService {
     private final String selfUrl;
@@ -27,13 +29,14 @@ public class TransferSenderService extends TransferService {
     private final Map<HashRange, Shard> hashRangeShardMap = new HashMap<>();
     private final Logger log = LoggerFactory.getLogger(TransferSenderService.class);
 
-    public TransferSenderService(String selfUrl) {
+    public TransferSenderService(String selfUrl, Function<String, Integer> hashFunction) {
+        super(hashFunction);
         this.selfUrl = selfUrl;
     }
 
     public void setTransfer(Map<Shard, Set<HashRange>> shardSetMap) {
         if (isTransferring) {
-            throw new IllegalStateException("Transfer is started");
+            throw new TransferException("Transfer is started");
         }
         isTransferring = true;
 
@@ -49,7 +52,7 @@ public class TransferSenderService extends TransferService {
         }
     }
 
-    public void startTransfer(Iterator<Entry<MemorySegment>> entryIterator) throws IOException {
+    public void startTransfer(Iterator<Entry<MemorySegment>> entryIterator) {
         log.info("Start transfer");
         while (entryIterator.hasNext()) {
             Entry<MemorySegment> entry = entryIterator.next();
@@ -78,12 +81,12 @@ public class TransferSenderService extends TransferService {
             );
         } catch (IOException | InterruptedException e) {
             clear();
-            throw new IllegalStateException("error transferring key: " + key, e);
+            throw new TransferException("error transferring key: " + key, e);
         }
 
         if (response.statusCode() != 201) {
             clear();
-            throw new IllegalStateException("error transferring key: " + key + ", response: " + response.statusCode());
+            throw new TransferException("error transferring key: " + key + ", status: " + response.statusCode());
         }
     }
 
@@ -96,13 +99,11 @@ public class TransferSenderService extends TransferService {
                         HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)
                 );
             } catch (IOException | InterruptedException e) {
-                throw new IllegalStateException("error end transferring error", e);
+                throw new TransferException("error end transferring error", e);
             }
 
             if (response.statusCode() != 200) {
-                throw new IllegalStateException(
-                        "error response end transferring status code: " + response.statusCode()
-                );
+                throw new TransferException("error transferring end, status: " + response.statusCode());
             }
         }
     }
@@ -112,7 +113,7 @@ public class TransferSenderService extends TransferService {
         try {
             jsonShard = Json.toJson(new ShardAddBody(selfUrl, new ArrayList<>()));
         } catch (IOException e) {
-            throw new IllegalStateException("error creating json from shard.", e);
+            throw new TransferException("error creating json from shard.", e);
         }
 
         return HttpRequest.newBuilder()
@@ -126,14 +127,13 @@ public class TransferSenderService extends TransferService {
         return HttpRequest.newBuilder()
                 .PUT(HttpRequest.BodyPublishers.ofByteArray(value))
                 .timeout(Duration.ofSeconds(2))
-                .uri(URI.create(shard.getUrl() + "/v0/transfer/entity?id=" + key + "&from=1&ack=1"))
+                .uri(URI.create(shard.getUrl() + "/v0/transfer/entity?id=" + key))
                 .build();
     }
 
     @Override
     public void clear() {
         super.clear();
-        hashRanges.clear();
         shards.clear();
     }
 }

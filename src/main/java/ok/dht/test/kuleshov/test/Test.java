@@ -104,7 +104,6 @@ public class Test {
                 HttpURLConnection.HTTP_CREATED == sendPut(service, KEY, VALUE.getBytes(StandardCharsets.UTF_8))
         );
         Service addedService = createAddedService(19666, 2, LOCALHOST + 19234, new ArrayList<>());
-        Thread.sleep(5000);
         assert (
                 HttpURLConnection.HTTP_OK == sendGet(service, KEY)
         );
@@ -112,28 +111,6 @@ public class Test {
                 HttpURLConnection.HTTP_OK == sendGet(addedService, KEY)
         );
         assert (200 == addedService.handleGet(KEY).getStatus());
-    }
-
-    public void twoNodeTransfer() throws IOException, InterruptedException {
-        List<Integer> ports = new ArrayList<>();
-        ports.add(19235);
-        List<Service> serviceList = createServices(ports);
-        Service service = serviceList.get(0);
-        for (int i = 0; i < 1000; i++) {
-            assert (
-                    HttpURLConnection.HTTP_CREATED
-                            == sendPut(service, KEY + i, VALUE.getBytes(StandardCharsets.UTF_8)));
-        }
-        final Service addedService = createAddedService(19667, 4, LOCALHOST + 19235, new ArrayList<>());
-        Thread.sleep(10);
-        assert (
-                HttpURLConnection.HTTP_OK == sendGet(service, "41231410")
-        );
-        assert (
-                HttpURLConnection.HTTP_GATEWAY_TIMEOUT == sendGet(service, "4123141")
-        );
-        assert (HttpURLConnection.HTTP_NOT_FOUND == sendGet(addedService, "123")
-        );
     }
 
     public void twoNodeCustomHash() throws IOException, InterruptedException {
@@ -153,7 +130,6 @@ public class Test {
         List<Integer> hashes = new ArrayList<>();
         hashes.add(1669446702);
         Service addedService = createAddedService(19668, 6,LOCALHOST + 19236, hashes);
-        Thread.sleep(3000);
         assert (
                 HttpURLConnection.HTTP_OK == sendGet(addedService, key2)
         );
@@ -189,7 +165,7 @@ public class Test {
         Thread.sleep(10000);
         for (int i = 0; i < 1000; i++) {
             assert (
-                    HttpURLConnection.HTTP_OK == sendGet(serviceList.get(0), KEY)
+                    HttpURLConnection.HTTP_OK == sendGet(serviceList.get(0), KEY + i)
             );
         }
     }

@@ -14,13 +14,19 @@ import java.util.NavigableSet;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 
 public class ConsistentHashService {
-    private final Map<String, List<Integer>> urlToHash = new HashMap<>();
-    private final Map<Shard, Set<HashRange>> shardToHashRanges = new ConcurrentHashMap<>();
+    private final Map<String, Set<Integer>> urlToHash = new HashMap<>();
+    private final Map<Shard, Set<HashRange>> shardToHashRanges = new HashMap<>();
     private final NavigableSet<CircleRange> circle = new TreeSet<>();
     private final List<Shard> cluster = new ArrayList<>();
     private final Map<Shard, Integer> shardIndexMap = new HashMap<>();
+    private final Function<String, Integer> hashFunction;
+
+    public ConsistentHashService(Function<String, Integer> hashFunction) {
+        this.hashFunction = hashFunction;
+    }
 
     public Shard getShardByKey(String key) {
         return getCircleNext(circle, Hash.murmur3(key)).getShard();
@@ -32,7 +38,11 @@ public class ConsistentHashService {
 
     public ClusterConfig getClusterConfig() {
         ClusterConfig clusterConfig = new ClusterConfig();
-        clusterConfig.setUrlToHash(urlToHash);
+        Map<String, List<Integer>> map = new HashMap<>();
+        for (Map.Entry<String, Set<Integer>> entry : urlToHash.entrySet()) {
+            map.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        clusterConfig.setUrlToHash(map);
 
         return clusterConfig;
     }
@@ -48,18 +58,10 @@ public class ConsistentHashService {
         return shards;
     }
 
-    public Map<Shard, Set<HashRange>> addShard(ShardAddBody shardAddBody, int vnodes) {
-        if (shardAddBody.getHashes() == null || shardAddBody.getHashes().isEmpty()) {
-            return addShard(new Shard(shardAddBody.getUrl()), vnodes);
-        }
-
-        return addShard(new Shard(shardAddBody.getUrl()), shardAddBody.getHashes());
-    }
-
     public Map<Shard, Set<HashRange>> addShard(Shard shard, int vnodes) {
         List<Integer> vnodeHashes = new ArrayList<>();
         for (int i = 1; i <= vnodes; i++) {
-            vnodeHashes.add(Hash.murmur3(shard.getUrl() + "|" + i));
+            vnodeHashes.add(hashFunction.apply(shard.getUrl() + "|" + i));
         }
 
         return addShard(shard, vnodeHashes);
@@ -72,7 +74,7 @@ public class ConsistentHashService {
             return Map.of();
         }
 
-        urlToHash.putIfAbsent(newShard.getUrl(), new ArrayList<>());
+        urlToHash.putIfAbsent(newShard.getUrl(), new HashSet<>());
         urlToHash.get(newShard.getUrl()).addAll(vnodeHashes);
         cluster.add(newShard);
         cluster.sort(Comparator.comparing(Shard::getUrl));
@@ -144,16 +146,16 @@ public class ConsistentHashService {
         CoolPair<HashRange, HashRange> pair = circleRange.getHashRange().split(vnodeHash);
 
         HashRange newShardRange = pair.getFirst();
-        HashRange oldRange = pair.getSecond();
+        HashRange oldShardRange = pair.getSecond();
 
         circle.remove(circleRange);
         circle.add(new CircleRange(newShard, newShardRange));
-        circle.add(new CircleRange(circleRange.getShard(), oldRange));
+        circle.add(new CircleRange(circleRange.getShard(), oldShardRange));
 
         shardToHashRanges.putIfAbsent(newShard, new HashSet<>());
         shardToHashRanges.get(newShard).add(newShardRange);
         shardToHashRanges.get(circleRange.getShard()).remove(circleRange.getHashRange());
-        shardToHashRanges.get(circleRange.getShard()).add(oldRange);
+        shardToHashRanges.get(circleRange.getShard()).add(oldShardRange);
 
         return new CoolPair<>(circleRange.getShard(), newShardRange);
     }
@@ -214,7 +216,7 @@ public class ConsistentHashService {
         int first = vnodeHashes.get(vnodeHashes.size() - 1);
         HashRange range = new HashRange(first + 1, first);
 
-        urlToHash.putIfAbsent(newShard.getUrl(), new ArrayList<>());
+        urlToHash.put(newShard.getUrl(), new HashSet<>());
         urlToHash.get(newShard.getUrl()).add(first);
 
         circle.add(new CircleRange(newShard, range));

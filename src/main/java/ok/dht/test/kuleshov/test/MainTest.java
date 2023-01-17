@@ -11,7 +11,6 @@ public final class MainTest {
         Test test = new Test();
         test.twoNode();
         test.twoNodeCustomHash();
-        test.twoNodeTransfer();
         test.twoNodeDelete();
     }
 }

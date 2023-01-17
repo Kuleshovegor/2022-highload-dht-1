@@ -1,16 +1,20 @@
 package ok.dht.test.kuleshov.sharding;
 
-import one.nio.util.Hash;
-
 import java.util.HashSet;
 import java.util.NavigableSet;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.function.Function;
 
 public class TransferService {
     protected boolean isTransferring;
     protected final Set<HashRange> hashRanges = new HashSet<>();
     protected final NavigableSet<Integer> circle = new TreeSet<>();
+    private final Function<String, Integer> hashFunction;
+
+    public TransferService(Function<String, Integer> hashFunction) {
+        this.hashFunction = hashFunction;
+    }
 
     public boolean isInTransfer(String id) {
         return getHashRange(id) != null;
@@ -21,7 +25,7 @@ public class TransferService {
             return null;
         }
 
-        int hash = Hash.murmur3(id);
+        int hash = hashFunction.apply(id);
         Integer a = circle.ceiling(hash);
         if (a == null) {
             a = circle.ceiling(Integer.MIN_VALUE);
