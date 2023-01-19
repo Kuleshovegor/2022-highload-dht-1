@@ -1,7 +1,6 @@
 package ok.dht.test.kuleshov.sharding;
 
 import ok.dht.test.kuleshov.utils.CoolPair;
-import one.nio.util.Hash;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -29,7 +28,7 @@ public class ConsistentHashService {
     }
 
     public Shard getShardByKey(String key) {
-        return getCircleNext(circle, Hash.murmur3(key)).getShard();
+        return getCircleNext(circle, hashFunction.apply(key)).getShard();
     }
 
     public int clusterSize() {
