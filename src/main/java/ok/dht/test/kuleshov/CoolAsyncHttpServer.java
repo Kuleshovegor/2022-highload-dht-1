@@ -39,6 +39,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Function;
 
 import static ok.dht.test.kuleshov.Validator.isCorrectAckFrom;
@@ -61,7 +62,9 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
     private int defaultFrom;
     private int defaultAck;
     private final String selfUrl;
-    private volatile boolean isBlocked;
+    private final ReentrantReadWriteLock clusterConfigLock = new ReentrantReadWriteLock();
+    private final ReentrantReadWriteLock.ReadLock readClusterLock = clusterConfigLock.readLock();
+    private final ReentrantReadWriteLock.WriteLock writeClusterLock = clusterConfigLock.writeLock();
     private ExecutorService workerExecutorService;
     private final ConsistentHashService consistentHashService;
     private final TransferSenderService transferSenderService;
@@ -181,58 +184,63 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
                 .executor(senderExecutorService)
                 .build();
 
-        isBlocked = true;
-        super.start();
+        writeClusterLock.lock();
+        try {
+            super.start();
 
-        ClusterConfig clusterConfig;
-        if (isAddedNode) {
-            try {
-                clusterConfig = requestClusterConfig(configRequestUrl);
-            } catch (IOException e) {
-                throw new IllegalStateException("Cluster config request error", e);
-            }
-            clusterConfig.getUrlToHash().put(selfUrl, customHashes);
-            for (Map.Entry<String, List<Integer>> entry : clusterConfig.getUrlToHash().entrySet()) {
-                if (entry.getKey().equals(selfUrl)) {
-                    continue;
+            ClusterConfig clusterConfig;
+            if (isAddedNode) {
+                try {
+                    clusterConfig = requestClusterConfig(configRequestUrl);
+                } catch (IOException e) {
+                    throw new IllegalStateException("Cluster config request error", e);
                 }
-                if (entry.getValue() == null || entry.getValue().isEmpty()) {
-                    consistentHashService.addShard(new Shard(entry.getKey()), DEFAULT_VNODES);
-                } else {
-                    consistentHashService.addShard(new Shard(entry.getKey()), new ArrayList<>(entry.getValue()));
-                }
-            }
-            Map<Shard, Set<HashRange>> shardSetMap;
-            if (clusterConfig.getUrlToHash().get(selfUrl) == null
-                    || clusterConfig.getUrlToHash().get(selfUrl).isEmpty()) {
-                shardSetMap = consistentHashService.addShard(new Shard(selfUrl), DEFAULT_VNODES);
-            } else {
-                shardSetMap = consistentHashService.addShard(
-                        new Shard(selfUrl), new ArrayList<>(clusterConfig.getUrlToHash().get(selfUrl))
-                );
-            }
-            transferReceiverService.receiveTransfer(shardSetMap);
-
-            defaultFrom = clusterConfig.getUrlToHash().size();
-            defaultAck = defaultFrom / 2 + 1;
-            isBlocked = false;
-            for (String shard : clusterConfig.getUrlToHash().keySet()) {
-                if (!Objects.equals(shard, selfUrl)) {
-                    try {
-                        sendAddNode(shard, new ArrayList<>(clusterConfig.getUrlToHash().get(selfUrl)));
-                    } catch (IOException e) {
-                        e.printStackTrace();
+                clusterConfig.getUrlToHash().put(selfUrl, customHashes);
+                for (Map.Entry<String, List<Integer>> entry : clusterConfig.getUrlToHash().entrySet()) {
+                    if (entry.getKey().equals(selfUrl)) {
+                        continue;
+                    }
+                    if (entry.getValue() == null || entry.getValue().isEmpty()) {
+                        consistentHashService.addShard(new Shard(entry.getKey()), DEFAULT_VNODES);
+                    } else {
+                        consistentHashService.addShard(new Shard(entry.getKey()), new ArrayList<>(entry.getValue()));
                     }
                 }
+                Map<Shard, Set<HashRange>> shardSetMap;
+                if (clusterConfig.getUrlToHash().get(selfUrl) == null
+                        || clusterConfig.getUrlToHash().get(selfUrl).isEmpty()) {
+                    shardSetMap = consistentHashService.addShard(new Shard(selfUrl), DEFAULT_VNODES);
+                } else {
+                    shardSetMap = consistentHashService.addShard(
+                            new Shard(selfUrl), new ArrayList<>(clusterConfig.getUrlToHash().get(selfUrl))
+                    );
+                }
+                transferReceiverService.receiveTransfer(shardSetMap);
+
+                defaultFrom = clusterConfig.getUrlToHash().size();
+                defaultAck = defaultFrom / 2 + 1;
+                writeClusterLock.unlock();
+                for (String shard : clusterConfig.getUrlToHash().keySet()) {
+                    if (!Objects.equals(shard, selfUrl)) {
+                        try {
+                            sendAddNode(shard, new ArrayList<>(clusterConfig.getUrlToHash().get(selfUrl)));
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                }
+            } else {
+                for (String shard : clusterUrls) {
+                    consistentHashService.addShard(new Shard(shard), DEFAULT_VNODES);
+                }
+                defaultFrom = clusterUrls.size();
+                defaultAck = defaultFrom / 2 + 1;
             }
-        } else {
-            for (String shard : clusterUrls) {
-                consistentHashService.addShard(new Shard(shard), DEFAULT_VNODES);
+        } finally {
+            if (writeClusterLock.isHeldByCurrentThread()) {
+                writeClusterLock.unlock();
             }
-            defaultFrom = clusterUrls.size();
-            defaultAck = defaultFrom / 2 + 1;
         }
-        isBlocked = false;
 
     }
 
@@ -258,62 +266,66 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
             throw new IllegalStateException(e);
         }
 
-        isBlocked = true;
-        Map<Shard, Set<HashRange>> map;
-        if (isAdd) {
-            if (shardAddBody.getHashes() == null || shardAddBody.getHashes().isEmpty()) {
-                map = consistentHashService.addShard(new Shard(shardAddBody.getUrl()), DEFAULT_VNODES);
+        writeClusterLock.lock();
+        try {
+            Map<Shard, Set<HashRange>> map;
+            if (isAdd) {
+                if (shardAddBody.getHashes() == null || shardAddBody.getHashes().isEmpty()) {
+                    map = consistentHashService.addShard(new Shard(shardAddBody.getUrl()), DEFAULT_VNODES);
+                } else {
+                    map = consistentHashService.addShard(new Shard(shardAddBody.getUrl()), shardAddBody.getHashes());
+                }
             } else {
-                map = consistentHashService.addShard(new Shard(shardAddBody.getUrl()), shardAddBody.getHashes());
+                map = consistentHashService.removeShard(new Shard(shardAddBody.getUrl()));
             }
-        } else {
-            map = consistentHashService.removeShard(new Shard(shardAddBody.getUrl()));
-        }
-        Shard selfShard = new Shard(selfUrl);
-        Set<HashRange> hashRangeSet = map.get(selfShard);
+            Shard selfShard = new Shard(selfUrl);
+            Set<HashRange> hashRangeSet = map.get(selfShard);
 
-        if (isAdd) {
-            if (hashRangeSet != null) {
-                transferSenderService.setTransfer(Map.of(new Shard(shardAddBody.getUrl()), hashRangeSet));
-                defaultFrom = consistentHashService.clusterSize();
-                defaultAck = defaultFrom / 2 + 1;
-                isBlocked = false;
-                transferSenderService.startTransfer(service.getAll());
+            defaultFrom = consistentHashService.clusterSize();
+            defaultAck = defaultFrom / 2 + 1;
+
+            if (isAdd) {
+                if (hashRangeSet != null) {
+                    transferSenderService.setTransfer(Map.of(new Shard(shardAddBody.getUrl()), hashRangeSet));
+                    writeClusterLock.unlock();
+                    transferSenderService.startTransfer(service.getAll());
+                }
+            } else {
+                if (hashRangeSet != null) {
+                    transferReceiverService.receiveTransfer(Map.of(new Shard(shardAddBody.getUrl()), hashRangeSet));
+                }
             }
-        } else {
-            if (hashRangeSet != null) {
-                transferReceiverService.receiveTransfer(Map.of(new Shard(shardAddBody.getUrl()), hashRangeSet));
+        } finally {
+            if (writeClusterLock.isHeldByCurrentThread()) {
+                writeClusterLock.unlock();
             }
         }
-        defaultFrom = consistentHashService.clusterSize();
-        defaultAck = defaultFrom / 2 + 1;
-        isBlocked = false;
 
         session.sendResponse(emptyResponse(Response.OK));
     }
 
     private void handleMainDeleteShardRequest(HttpSession session) throws IOException {
-        isBlocked = true;
-        Map<Shard, Set<HashRange>> map = consistentHashService.removeShard(new Shard(selfUrl));
+        writeClusterLock.lock();
+        try {
+            Map<Shard, Set<HashRange>> map = consistentHashService.removeShard(new Shard(selfUrl));
 
-        session.sendResponse(emptyResponse(Response.OK));
+            session.sendResponse(emptyResponse(Response.OK));
 
-        for (Shard shard : map.keySet()) {
-            sendDeleteNode(shard.getUrl());
+            for (Shard shard : map.keySet()) {
+                sendDeleteNode(shard.getUrl());
+            }
+
+            transferSenderService.setTransfer(map);
+        } finally {
+            writeClusterLock.unlock();
         }
-
-        transferSenderService.setTransfer(map);
-        isBlocked = false;
         transferSenderService.startTransfer(service.getAll());
     }
 
     @Override
     public void handleRequest(Request request, HttpSession session) throws IOException {
-        if (isBlocked) {
-            session.sendResponse(emptyResponse(Response.SERVICE_UNAVAILABLE));
-            return;
-        }
         workerExecutorService.execute(() -> {
+            readClusterLock.lock();
             try {
                 int method = request.getMethod();
                 if (!SUPPORTED_METHODS.contains(method)) {
@@ -329,14 +341,17 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
                         return;
                     }
                     case "/v0/addnode" -> {
+                        readClusterLock.unlock();
                         handleClusterChange(true, request, session);
                         return;
                     }
                     case "/v0/deletenode" -> {
+                        readClusterLock.unlock();
                         handleClusterChange(false, request, session);
                         return;
                     }
                     case "/v0/maindeletenode" -> {
+                        readClusterLock.unlock();
                         handleMainDeleteShardRequest(session);
                         return;
                     }
@@ -399,6 +414,12 @@ public class CoolAsyncHttpServer extends CoolHttpServer {
                 } catch (IOException exception) {
                     log.error(ERROR_SENDING_ERROR + exception.getMessage());
                     session.close();
+                }
+            } finally {
+                try {
+                    readClusterLock.unlock();
+                } catch (IllegalMonitorStateException ignore) {
+                    //ignore
                 }
             }
         });
